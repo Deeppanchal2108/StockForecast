@@ -6,6 +6,7 @@ import yfinance as yf
 import numpy as np
 import pandas as pd
 import joblib
+import matplotlib.pyplot as plt
 from keras.models import load_model
 from dotenv import load_dotenv
 
@@ -21,9 +22,7 @@ def get_gemini_response(prompt):
     response = model.generate_content(prompt)
     return response.text
 
-# Extract ticker and days from user input
 def extract_ticker_and_days(user_input):
-    """Extracts stock ticker and number of days from the response."""
     prompt = f"""
     Extract the valid stock ticker symbol and number of future prediction days from this text:
     
@@ -37,24 +36,18 @@ def extract_ticker_and_days(user_input):
     """
 
     response = get_gemini_response(prompt)
-
-    # Regex to extract ticker and days
     ticker_match = re.search(r"Ticker:\s*([A-Z]+)", response)
     days_match = re.search(r"Days:\s*(\d+)", response)
 
     ticker = ticker_match.group(1) if ticker_match else "NOT_FOUND"
     days = int(days_match.group(1)) if days_match else 7
 
-    # Ensure days is within the valid range [7, 20]
-    days = max(7, min(days, 20))
-
-    return ticker, days
+    return ticker, max(7, min(days, 20))
 
 def is_valid_ticker(ticker):
     try:
         stock = yf.Ticker(ticker)
-        info = stock.info
-        return "longName" in info
+        return "longName" in stock.info
     except:
         return False
 
@@ -63,16 +56,13 @@ def predict_future_prices(ticker, days):
     scaler_path = f"models/{ticker}_scaler.pkl"
     
     if not os.path.exists(model_path) or not os.path.exists(scaler_path):
-        print(f"Model or scaler missing for {ticker}. Exiting...")
         return None
     
     model = load_model(model_path)
     scaler = joblib.load(scaler_path)
     
-    # Fetch latest stock data
     df = yf.download(ticker, period="70d")
     if df.shape[0] < 60:
-        print(f"Not enough data to predict for {ticker}. Exiting...")
         return None
     
     last_60_days = df["Close"].values[-60:].reshape(-1, 1)
@@ -89,12 +79,10 @@ def predict_future_prices(ticker, days):
         predicted_price = scaler.inverse_transform(predicted_price_scaled)[0][0]
         predictions.append(predicted_price)
         
-        # Update input sequence for next prediction
         input_seq = np.append(input_seq[1:], predicted_price_scaled, axis=0)
     
     return predictions
 
-# Streamlit UI
 st.set_page_config(page_title="Stock Forecast")
 st.title("📈 Stock Price Prediction")
 
@@ -105,20 +93,42 @@ if st.button("Get Prediction Details"):
         ticker, days = extract_ticker_and_days(user_input)
 
         if ticker == "NOT_FOUND" or not is_valid_ticker(ticker):
-            st.error("❌ No company found with this name or invalid stock ticker. Please enter a valid stock symbol.")
+            st.error("❌ Invalid stock ticker. Please enter a valid symbol.")
         else:
-            st.write(f"**✅ Ticker:** {ticker}")
-            st.write(f"**📅 Days to Predict (limited to 7-20):** {days}")
-            
+            st.subheader(f"✅ Ticker: {ticker}")
+            st.write(f"📅 **Predicting for {days} days**")
+
             with st.spinner("🔄 Fetching predictions... Please wait!"):
                 predictions = predict_future_prices(ticker, days)
 
             if predictions:
-                df = pd.DataFrame({"Day": [f"Day {i+1}" for i in range(len(predictions))], "Predicted Price ($)": predictions})
+                df = pd.DataFrame({"Day": list(range(1, days+1)), "Predicted Price": predictions})
+                
+                # Display Predictions
                 st.subheader("📊 Predicted Prices")
-                st.dataframe(df.style.format({"Predicted Price ($)": "{:.2f}"}))  # Format prices to 2 decimal places
+                st.dataframe(df.style.format({"Predicted Price": "{:.2f}"}))
+
+                # Fetch historical data
+                df_hist = yf.download(ticker, period="70d")
+                actual_prices = df_hist["Close"].values[-60:]
+                days_actual = list(range(-60, 0))
+                days_future = list(range(1, days+1))
+
+                # Plot
+                plt.figure(figsize=(10, 5))
+                plt.plot(days_actual, actual_prices, label="Actual Prices (Last 60 Days)", color="blue")
+                plt.plot(days_future, predictions, label="Predicted Prices", color="red", linestyle="dashed", marker="o")
+                plt.axvline(0, color="gray", linestyle="--")
+                plt.xlabel("Days")
+                plt.ylabel("Stock Price ($)")
+                plt.title(f"Stock Price Prediction for {ticker}")
+                plt.legend()
+                plt.grid(True)
+
+                st.pyplot(plt)
+
             else:
-                st.error("⚠️ Unable to predict stock prices. Ensure the model and scaler exist for this ticker.")
+                st.error("⚠️ Unable to predict. Model or scaler missing.")
 
     else:
         st.warning("⚠️ Please enter a query.")
